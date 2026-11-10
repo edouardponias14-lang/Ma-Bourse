@@ -1,1 +1,74 @@
+name: Mettre à jour et publier le site
 
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "50 16 * * 1-5"
+    - cron: "45 21 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Décompresser le site
+        run: |
+          if [ -f ma-bourse.zip ]; then unzip -o -q ma-bourse.zip -d .; fi
+          ls
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Télécharger les derniers cours
+        run: python3 scripts/update_data.py
+
+      - name: Préparer le site
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          if [ -f CNAME ]; then
+            URL="https://$(head -n1 CNAME | tr -d '[:space:]')/"
+          elif [ "${REPO,,}" = "${OWNER}.github.io" ]; then
+            URL="https://${OWNER}.github.io/"
+          else
+            URL="https://${OWNER}.github.io/${REPO}/"
+          fi
+          echo "Adresse du site : $URL"
+          mkdir -p _site
+          for f in ./*.html assets data robots.txt sitemap.xml site.webmanifest sw.js .nojekyll CNAME; do
+            [ -e "$f" ] && cp -r "$f" _site/
+          done
+          touch _site/.nojekyll
+          [ -f _site/sw.js ] && sed -i "s#ma-bourse-v1#ma-bourse-${GITHUB_RUN_ID}#" _site/sw.js
+          TODAY="$(date -u +%F)"
+          find _site -type f \( -name '*.html' -o -name '*.xml' -o -name '*.txt' \) \
+            -exec sed -i "s#__SITE_URL__#${URL}#g; s#__DATE__#${TODAY}#g" {} +
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
